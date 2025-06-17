@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMenu, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QLineEdit, QFileDialog, QScrollArea, QMainWindow, QMessageBox
 )
-from PyQt6.QtGui import QPixmap, QImage, QFont, QAction 
+from PyQt6.QtGui import QPixmap, QImage, QFont, QAction, QDesktopServices
 from PyQt6.QtCore import Qt, QCoreApplication, pyqtSignal, QObject, QUrl, QTimer 
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -296,11 +296,26 @@ class ChatClient(QMainWindow):
             img_label.setPixmap(pixmap)
             bubble_layout.addWidget(img_label)
 
+        elif media_data and media_type and media_type.startswith("application/"):
+            file_label = QLabel(f"{username} sent a file: {text}")
+            file_label.setStyleSheet("color: white;")
+            bubble_layout.addWidget(file_label)
+
+            open_btn = QPushButton("Open File")
+            def open_file_direct():
+                path = f"temp_file_{time.time()}_{text}"
+                with open(path, "wb") as f:
+                    f.write(media_data)
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            open_btn.clicked.connect(open_file_direct)
+            bubble_layout.addWidget(open_btn)
+
         elif text and not media_data:
             msg = QLabel(text)
             msg.setWordWrap(True)
             msg.setStyleSheet("color: white;")
             bubble_layout.addWidget(msg)
+
 
         if timestamp:
             time_label = QLabel(timestamp)
