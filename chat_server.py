@@ -8,7 +8,7 @@ import signal
 import chat_pb2
 import chat_pb2_grpc
 
-# Store connected clients as a set of objects (we'll use a custom Client class)
+# Store connected clients
 clients_lock = threading.Lock()
 connected_clients = set()
 
@@ -28,11 +28,10 @@ class Client:
         self.condition = threading.Condition()
 
 class ChatService(chat_pb2_grpc.ChatServiceServicer):
-
     def Chat(self, request_iterator, context):
         client = Client()
 
-        # Add client to connected clients
+        # Add client to connected set
         with clients_lock:
             connected_clients.add(client)
 
@@ -41,14 +40,13 @@ class ChatService(chat_pb2_grpc.ChatServiceServicer):
                 with client.condition:
                     while not client.messages:
                         client.condition.wait()
-                    # Pop and yield one message at a time
                     msg = client.messages.pop(0)
                     yield msg
 
         def receive_messages():
             try:
                 for chat_message in request_iterator:
-                    # Broadcast to all connected clients
+                    # Broadcast to all clients
                     with clients_lock:
                         for c in connected_clients:
                             with c.condition:
@@ -59,17 +57,22 @@ class ChatService(chat_pb2_grpc.ChatServiceServicer):
             finally:
                 # Remove client on disconnect
                 with clients_lock:
-                    connected_clients.remove(client)
+                    connected_clients.discard(client)
 
-        # Start receiving in separate thread
         threading.Thread(target=receive_messages, daemon=True).start()
-
-        # Yield messages from send_messages generator
         yield from send_messages()
 
-
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # ✅ Allow messages up to 100 MB
+    options = [
+        ('grpc.max_send_message_length', 100 * 1024 * 1024),
+        ('grpc.max_receive_message_length', 100 * 1024 * 1024),
+    ]
+
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        options=options  # 👈 Critical to support large files
+    )
     chat_pb2_grpc.add_ChatServiceServicer_to_server(ChatService(), server)
     server.add_insecure_port('0.0.0.0:50051')
 
@@ -79,7 +82,6 @@ def serve():
 
     server.start()
 
-    # Graceful shutdown handler
     def shutdown_handler(signum, frame):
         print("\nServer stopping gracefully...")
         server.stop(0)
@@ -92,10 +94,8 @@ def serve():
         while True:
             time.sleep(86400)
     except KeyboardInterrupt:
-        # fallback, should rarely reach here due to signal handler
         print("Server stopping...")
         server.stop(0)
-
 
 if __name__ == '__main__':
     serve()

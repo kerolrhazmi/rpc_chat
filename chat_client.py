@@ -27,8 +27,8 @@ class SignalHandler(QObject):
     system_message_signal = pyqtSignal(str)
 
 class ChatClient(QMainWindow):
-    def __init__(self):
-        super().__init__()
+    def __init__(self):  # ✅ fixed __init__
+        super().__init__()  # ✅ fixed __init__
         self.channel = self.stub = self.username = self.server_ip = None
         self.running = False
         self.messages_to_send = []
@@ -112,10 +112,9 @@ class ChatClient(QMainWindow):
         header.addWidget(title)
         header.addStretch()
 
-        # Theme toggle button
-        theme_btn = QPushButton("☀️" if not self.is_dark_mode else "🌙")
+        theme_btn = QPushButton("☀" if not self.is_dark_mode else "🌙")
         theme_btn.setFixedSize(30, 30)
-        theme_btn.clicked.connect(lambda: [self.toggle_theme(), theme_btn.setText("☀️" if not self.is_dark_mode else "🌙")])
+        theme_btn.clicked.connect(lambda: [self.toggle_theme(), theme_btn.setText("☀" if not self.is_dark_mode else "🌙")])
         header.addWidget(theme_btn)
 
         layout.addLayout(header)
@@ -152,7 +151,7 @@ class ChatClient(QMainWindow):
 
     def show_emoji_menu(self):
         menu = QMenu()
-        emojis = ["😀", "😂", "😍", "👍", "🙏", "🔥", "❤️", "🎉", "😎", "🤖"]
+        emojis = ["😀", "😂", "😍", "👍", "🙏", "🔥", "❤", "🎉", "😎", "🤖"]
         for emoji in emojis:
             action = QAction(emoji, self)
             action.triggered.connect(lambda _, e=emoji: self.entry.insert(e))
@@ -197,17 +196,12 @@ class ChatClient(QMainWindow):
                     "media_type": media_type,
                     "filename": filename
                 })
-
                 timestamp = datetime.now().strftime("%H:%M")
-
-                # 👇 This makes the sender see their own media too
                 self.signal_handler.add_message_signal.emit(
-                filename, True, timestamp, media_data, media_type, self.username
+                    filename, True, timestamp, media_data, media_type, self.username
                 )
-
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to send media:\n{e}")
-
 
     def message_generator(self):
         yield chat_pb2.ChatMessage(username=self.username, message="has joined the chat")
@@ -321,7 +315,6 @@ class ChatClient(QMainWindow):
         QTimer.singleShot(0, lambda: self.scroll_area.verticalScrollBar().setValue(
         self.scroll_area.verticalScrollBar().maximum()))
 
-
     def create_system_message(self, text):
         label = QLabel(text)
         label.setStyleSheet("color: #9ca3af; background-color: #374151; padding: 4px;")
@@ -345,7 +338,7 @@ class ChatClient(QMainWindow):
             self.channel.close()
         event.accept()
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # ✅ Correct main check
     app = QApplication(sys.argv)
     client = ChatClient()
     sys.exit(app.exec())
