@@ -25,18 +25,21 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 class SignalHandler(QObject):
     add_message_signal = pyqtSignal(str, bool, str, bytes, str, str)
     system_message_signal = pyqtSignal(str)
+    update_group_picture_signal = pyqtSignal(bytes, str)  # New signal for group picture updates
 
 class ChatClient(QMainWindow):
-    def __init__(self):  # ✅ fixed __init__
-        super().__init__()  # ✅ fixed __init__
+    def __init__(self):
+        super().__init__()
         self.channel = self.stub = self.username = self.server_ip = None
         self.running = False
         self.messages_to_send = []
         self.profile_picture_data = None
         self.video_players = []
+        self.image_windows = []  # Store image viewer windows
         self.signal_handler = SignalHandler()
         self.signal_handler.add_message_signal.connect(self.create_message_bubble)
         self.signal_handler.system_message_signal.connect(self.create_system_message)
+        self.signal_handler.update_group_picture_signal.connect(self.update_group_picture)  # Connect new signal
         self.is_dark_mode = True
         self.show_login_screen()
 
@@ -159,7 +162,7 @@ class ChatClient(QMainWindow):
         menu.exec(self.mapToGlobal(self.sender().pos()))
 
     def change_profile_picture(self, event=None):
-        filepath, _ = QFileDialog.getOpenFileName(self, "Select profile picture", "", "Images (*.png *.jpg *.jpeg *.gif)")
+        filepath, _ = QFileDialog.getOpenFileName(self, "Select group picture", "", "Images (*.png *.jpg *.jpeg *.gif)")
         if not filepath:
             return
         image = Image.open(filepath).resize((46, 46))
@@ -169,9 +172,76 @@ class ChatClient(QMainWindow):
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         self.profile_picture_data = buffer.getvalue()
+        
+        # Update local profile picture immediately
         qimage = QImage.fromData(self.profile_picture_data)
         self.profile_label.setPixmap(QPixmap.fromImage(qimage).scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        self.messages_to_send.append({"media_data": self.profile_picture_data, "media_type": "profile_picture"})
+        
+        # Send group picture update to all users
+        self.messages_to_send.append({
+            "media_data": self.profile_picture_data, 
+            "media_type": "group_picture_update",
+            "filename": "group_picture_update"
+        })
+        
+        # Show system message about the update
+        self.signal_handler.system_message_signal.emit(f"{self.username} updated the group picture")
+
+    def update_group_picture(self, picture_data, username):
+        """Update the group picture for all users"""
+        if picture_data:
+            self.profile_picture_data = picture_data
+            qimage = QImage.fromData(picture_data)
+            self.profile_label.setPixmap(QPixmap.fromImage(qimage).scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def process_hd_image(self, filepath):
+        """Process image to maintain HD quality while optimizing for transmission"""
+        try:
+            # Open the original image
+            with Image.open(filepath) as img:
+                # Convert to RGB if necessary (for JPEG compatibility)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                
+                # Get original dimensions
+                original_width, original_height = img.size
+                
+                # Define maximum dimensions for HD quality (adjust as needed)
+                MAX_HD_SIZE = 2048  # 2K resolution
+                
+                # Only resize if image is larger than MAX_HD_SIZE
+                if max(original_width, original_height) > MAX_HD_SIZE:
+                    # Calculate new dimensions maintaining aspect ratio
+                    if original_width > original_height:
+                        new_width = MAX_HD_SIZE
+                        new_height = int((original_height * MAX_HD_SIZE) / original_width)
+                    else:
+                        new_height = MAX_HD_SIZE
+                        new_width = int((original_width * MAX_HD_SIZE) / original_height)
+                    
+                    # Resize with high quality algorithm
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Save with high quality settings
+                buffer = io.BytesIO()
+                
+                # Determine optimal format and quality
+                ext = filepath.split('.')[-1].lower()
+                if ext in ['jpg', 'jpeg']:
+                    img.save(buffer, format='JPEG', quality=95, optimize=True)
+                elif ext == 'png':
+                    img.save(buffer, format='PNG', optimize=True, compress_level=6)
+                else:
+                    # Default to PNG for other formats
+                    img.save(buffer, format='PNG', optimize=True, compress_level=6)
+                
+                return buffer.getvalue()
+                
+        except Exception as e:
+            print(f"Error processing HD image: {e}")
+            # Fallback to original file data
+            with open(filepath, "rb") as f:
+                return f.read()
 
     def select_media(self):
         filepath, _ = QFileDialog.getOpenFileName(self, "Select file", "", "All Files (*)")
@@ -182,24 +252,39 @@ class ChatClient(QMainWindow):
             QMessageBox.warning(self, "File Too Large", "The selected file exceeds 100 MB limit.")
             return
         try:
-            with open(filepath, "rb") as f:
-                media_data = f.read()
-                filename = os.path.basename(filepath)
-                ext = filename.split('.')[-1].lower()
-                media_type = (
-                    f"image/{ext}" if ext in ["png", "jpg", "jpeg", "gif"] else
-                    f"video/{ext}" if ext in ["mp4", "avi", "mov", "mkv"] else
-                    f"application/{ext}"
-                )
-                self.messages_to_send.append({
-                    "media_data": media_data,
-                    "media_type": media_type,
-                    "filename": filename
-                })
-                timestamp = datetime.now().strftime("%H:%M")
-                self.signal_handler.add_message_signal.emit(
-                    filename, True, timestamp, media_data, media_type, self.username
-                )
+            filename = os.path.basename(filepath)
+            ext = filename.split('.')[-1].lower()
+            
+            # Determine media type
+            if ext in ["png", "jpg", "jpeg", "gif", "bmp", "tiff"]:
+                media_type = f"image/{ext}"
+                # Process image for HD quality
+                media_data = self.process_hd_image(filepath)
+            elif ext in ["mp4", "avi", "mov", "mkv", "webm"]:
+                media_type = f"video/{ext}"
+                # Keep video files as-is
+                with open(filepath, "rb") as f:
+                    media_data = f.read()
+            else:
+                media_type = f"application/{ext}"
+                # Keep other files as-is
+                with open(filepath, "rb") as f:
+                    media_data = f.read()
+            
+            # Check processed file size
+            if len(media_data) > MAX_FILE_SIZE:
+                QMessageBox.warning(self, "File Too Large", "The processed file still exceeds 100 MB limit.")
+                return
+                
+            self.messages_to_send.append({
+                "media_data": media_data,
+                "media_type": media_type,
+                "filename": filename
+            })
+            timestamp = datetime.now().strftime("%H:%M")
+            self.signal_handler.add_message_signal.emit(
+                filename, True, timestamp, media_data, media_type, self.username
+            )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to send media:\n{e}")
 
@@ -232,8 +317,18 @@ class ChatClient(QMainWindow):
         try:
             for response in self.stub.Chat(self.message_generator()):
                 timestamp = datetime.now().strftime("%H:%M")
-                if response.username == self.username or response.media_type == "profile_picture":
+                
+                # Handle group picture updates
+                if response.media_type == "group_picture_update":
+                    if response.username != self.username:  # Only update if it's from someone else
+                        self.signal_handler.update_group_picture_signal.emit(response.media_data, response.username)
+                        self.signal_handler.system_message_signal.emit(f"{response.username} updated the group picture")
                     continue
+                
+                # Skip own messages for regular chat
+                if response.username == self.username:
+                    continue
+                    
                 self.signal_handler.add_message_signal.emit(
                     response.message, False, timestamp,
                     response.media_data, response.media_type, response.username
@@ -242,6 +337,49 @@ class ChatClient(QMainWindow):
         except grpc.RpcError as e:
             QMessageBox.critical(self, "Disconnected", f"Lost connection to server:\n{e}")
             self.signal_handler.system_message_signal.emit("Disconnected from server.")
+
+    def show_full_image(self, image_data, filename):
+        """Display full-size HD image in a new window"""
+        try:
+            full_image_window = QWidget()
+            full_image_window.setWindowTitle(f"Full Image - {filename}")
+            full_image_window.setStyleSheet("background-color: #1f2937;")
+            
+            layout = QVBoxLayout(full_image_window)
+            
+            # Create scroll area for large images
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            
+            # Create image label
+            image_label = QLabel()
+            qimage = QImage.fromData(image_data)
+            pixmap = QPixmap.fromImage(qimage)  # Full resolution, no scaling
+            image_label.setPixmap(pixmap)
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            scroll_area.setWidget(image_label)
+            layout.addWidget(scroll_area)
+            
+            # Add close button
+            close_btn = QPushButton("Close")
+            close_btn.setStyleSheet("background-color: #10b981; color: white; padding: 10px;")
+            close_btn.clicked.connect(full_image_window.close)
+            layout.addWidget(close_btn)
+            
+            # Set window size (but not larger than screen)
+            screen_geometry = QApplication.primaryScreen().geometry()
+            window_width = min(pixmap.width() + 50, screen_geometry.width() - 100)
+            window_height = min(pixmap.height() + 100, screen_geometry.height() - 100)
+            
+            full_image_window.resize(window_width, window_height)
+            full_image_window.show()
+            
+            # Store reference to prevent garbage collection
+            self.image_windows.append(full_image_window)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to display full image: {e}")
 
     def create_message_bubble(self, text, is_self=False, timestamp="", media_data=None, media_type=None, username=""):
         container = QWidget()
@@ -291,9 +429,44 @@ class ChatClient(QMainWindow):
 
         elif media_data and media_type and media_type.startswith("image/"):
             qimage = QImage.fromData(media_data)
-            pixmap = QPixmap.fromImage(qimage).scaled(400, 400, Qt.AspectRatioMode.KeepAspectRatio)
+            
+            # Calculate display size while maintaining HD quality
+            original_size = qimage.size()
+            display_width = min(600, original_size.width())  # Max display width
+            display_height = min(600, original_size.height())  # Max display height
+            
+            # Maintain aspect ratio
+            if original_size.width() > original_size.height():
+                if original_size.width() > display_width:
+                    display_height = int((original_size.height() * display_width) / original_size.width())
+                else:
+                    display_width = original_size.width()
+                    display_height = original_size.height()
+            else:
+                if original_size.height() > display_height:
+                    display_width = int((original_size.width() * display_height) / original_size.height())
+                else:
+                    display_width = original_size.width()
+                    display_height = original_size.height()
+            
+            # Create high-quality scaled pixmap
+            pixmap = QPixmap.fromImage(qimage).scaled(
+                display_width, 
+                display_height, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
             img_label = QLabel()
             img_label.setPixmap(pixmap)
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            # Make image clickable to view full size
+            def view_full_image():
+                self.show_full_image(media_data, text)
+            
+            img_label.mousePressEvent = lambda event: view_full_image()
+            img_label.setStyleSheet("border: 1px solid #555; cursor: pointer;")
             bubble_layout.addWidget(img_label)
 
         elif media_data and media_type and media_type.startswith("application/"):
@@ -315,7 +488,6 @@ class ChatClient(QMainWindow):
             msg.setWordWrap(True)
             msg.setStyleSheet("color: white;")
             bubble_layout.addWidget(msg)
-
 
         if timestamp:
             time_label = QLabel(timestamp)
@@ -353,7 +525,7 @@ class ChatClient(QMainWindow):
             self.channel.close()
         event.accept()
 
-if __name__ == "__main__":  # ✅ Correct main check
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     client = ChatClient()
     sys.exit(app.exec())
