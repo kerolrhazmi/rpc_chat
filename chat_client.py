@@ -432,8 +432,8 @@ class ChatClient(QMainWindow):
             
             # Calculate display size while maintaining HD quality
             original_size = qimage.size()
-            display_width = min(600, original_size.width())  # Max display width
-            display_height = min(600, original_size.height())  # Max display height
+            display_width = min(200, original_size.width())  # Max display width
+            display_height = min(200, original_size.height())  # Max display height
             
             # Maintain aspect ratio
             if original_size.width() > original_size.height():
